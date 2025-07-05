@@ -1,0 +1,283 @@
+---
+title: "Informe de Análisis de Datos - Packing de Cerezas"
+author: "Adán Marchena"
+date: "05-07 -2025"
+format: pdf
+execute:
+  echo: false
+  message: false
+  warning: false
+editor: visual
+---
+
+```{r}
+#Llamar funciones
+source("../funciones/evaluar_calidad.R")
+source("../funciones/generar_reporte.R")
+```
+
+## 0. Definición del problema
+
+El objetivo de este proyecto es analizar si variables operacionales como el turno, calibre, variedad, tipo de empaque, entre otras, influyen en la calidad final de la fruta procesada, específicamente cerezas. Debido a que este tipo de datos suele ser privado en el mercado frutícola, se ha trabajado con un conjunto de datos ficticios representativo del proceso real.
+
+**Pregunta de investigación:** ¿Influyen variables del proceso como el turno, el tipo de empaque y el calibre en la probabilidad de que la fruta obtenga una calidad “premium”?
+
+**Parámetro a estimar:** Se estimarán los coeficientes del modelo de regresión logística multinomial que explican la probabilidad de pertenecer a cada nivel de calidad según las variables del proceso.
+
+## 1. Introducción
+
+El conjunto de datos utilizado en este informe corresponde a registros simulados del proceso de packing de cerezas. Este dataset contiene 75.000 observaciones y 11 variables relacionadas con el proceso productivo, las cuales se detallan a continuación:
+
+| Variable | Tipo de dato en R | Tipo estadístico | Descripción |
+|------------------|------------------|------------------|------------------|
+| fecha | date | Cuantitativa discreta (Ordenada) | Fecha de registro del embalaje |
+| turno | chr | Cualitativa nominal | Franja horaria del proceso |
+| calibre | chr | Cualitativa ordinal | Tamaño de la fruta |
+| tipo_empaque | factor | Cualitativa nominal | Formato de la caja |
+| peso_total_kg | num | Cuantitativa continua | Kilos dentro de la caja |
+| n_cajas | num | Cuantitativa discreta | Cantidad de cajas por turno |
+| tiempo_min | num | Cuantitativa discreta | Duración del turno en minutos |
+| calidad | factor | Cualitativa ordinal | Calidad de la fruta |
+| variedad | chr | Cualitativa nominal | Variedad de la fruta |
+| destino | factor | Cualitativa nominal | Mercado al que está dirigida |
+| operario_id | chr | Cualitativa nominal | Código identificador del operario |
+
+: Tabla 1. Descripción de variables
+
+El objetivo principal del análisis es identificar patrones o relaciones que permitan comprender cómo ciertos factores afectan la calidad final del producto. Para ello se realizarán etapas de limpieza de datos, análisis exploratorio y visualización de datos utilizando exclusivamente funciones del ecosistema `tidyverse`, y gráficos con `ggplot2`.
+
+## 2. Preprocesamiento de datos
+
+Esta sección describe de forma esquemática el proceso de preparación de los datos previo al análisis. Primero, se estandarizan los nombres de las variables, luego se realiza una conversión de tipos para asegurar que cada variable tenga un formato coherente con su naturaleza. A continuación, se identifican valores perdidos y se imputan según la distribución observada en los histogramas. Finalmente, se limpian y transforman variables categóricas para facilitar el modelamiento posterior.
+
+```{r}
+#Librerias
+library(tidyverse)
+library(ggplot2)
+library(tidyr)
+library(dplyr)
+library(data.table)
+library(skimr)
+library(psych)
+library(nnet)
+library(plotly)
+library(janitor)
+```
+
+```{r}
+#Cargar datos
+data <- read.csv('../datos/packing_cerezas.csv') |>
+  clean_names() # estandariza nombres
+```
+
+```{r}
+# Dimensión del dataset
+dim(data)
+```
+
+```{r}
+# Conversión de variables
+data_corregida <- data |>
+  mutate(
+    fecha = as.Date(fecha, format = "%Y-%m-%d"),
+    across(c(n_cajas, tiempo_min), as.numeric),
+    calidad = factor(calidad, levels = c("baja", "estandar", "premium"), ordered = TRUE),
+    operario_id = as.character(operario_id),
+    tipo_empaque = factor(tipo_empaque),
+    destino = factor(destino)
+  )
+```
+
+```{r}
+# Verificar cantidad de datos faltantes por variable
+data_corregida |> summarise(across(everything(), ~sum(is.na(.))))
+```
+
+## 3. Análisis exploratorio de datos
+
+### Distribución de variables cualitativas por calidad
+
+Se visualiza la relación entre algunas variables categóricas y la variable de interés `calidad`, usando gráficos de barras proporcionales.
+
+```{r}
+# Calidad vs Turno
+ggplot(data_corregida, aes(x = turno, fill = calidad)) +
+  geom_bar(position = "fill") +
+  labs(title = "Distribución proporcional de calidad según turno", x = "Turno", y = "Proporción") +
+  theme_minimal()
+
+# Calidad vs Tipo de empaque
+ggplot(data_corregida, aes(x = tipo_empaque, fill = calidad)) +
+  geom_bar(position = "fill") +
+  labs(title = "Distribución proporcional de calidad según tipo de empaque", x = "Tipo de empaque", y = "Proporción") +
+  theme_minimal()
+```
+
+### Imputación de datos faltantes
+
+Antes de imputar valores faltantes en las variables numéricas, se realiza una visualización de su distribución mediante histogramas. Esto permite decidir si es más apropiado imputar con la media o con la mediana, dependiendo de la simetría y presencia de valores atípicos.
+
+```{r}
+# Panel de 2x2 con histogramas
+par(mfrow = c(2, 2))
+
+# Histograma de tiempo_min
+hist(data_corregida$tiempo_min, col = "skyblue", main = "Tiempo (min)", xlab = "Tiempo", border = "black")
+
+# Histograma de n_cajas
+hist(data_corregida$n_cajas, col = "lightgreen", main = "Número de cajas", xlab = "Cajas", border = "black")
+
+# Histograma de peso_total_kg
+hist(data_corregida$peso_total_kg, col = "orange", main = "Peso total (kg)", xlab = "Peso (kg)", border = "black")
+
+# Histograma de operario_id (por frecuencia)
+barchart <- table(data_corregida$operario_id)
+barchart <- sort(barchart, decreasing = TRUE)[1:10]  # Mostrar solo top 10 si hay muchos operarios
+barplot(barchart, col = "violet", main = "Top 10 Operarios (frecuencia)", las = 2)
+```
+
+Dado que las distribuciones de las variables `peso_total_kg`, `n_cajas` y `tiempo_min` presentan una asimetría evidente (según los histogramas), se optó por imputar con la mediana en cada caso. Para la variable `operario_id`, se utilizó la categoría "desconocido", ya que se trata de un identificador y no tiene sentido aplicar medidas de tendencia.
+
+```{r}
+data_final <- data_corregida |> mutate(
+  peso_total_kg = ifelse(is.na(peso_total_kg), median(peso_total_kg, na.rm = TRUE), peso_total_kg),
+  n_cajas = ifelse(is.na(n_cajas), median(n_cajas, na.rm = TRUE), n_cajas),
+  tiempo_min = ifelse(is.na(tiempo_min), median(tiempo_min, na.rm = TRUE), tiempo_min),
+  operario_id = ifelse(is.na(operario_id), "desconocido", operario_id)
+)
+```
+
+```{r}
+# Verificar cantidad de datos faltantes por variable
+data_final |> summarise(across(everything(), ~sum(is.na(.))))
+```
+
+## 4. Comparación mediante regresión logística multinomial
+
+Para este análisis se utilizó un modelo de regresión logística multinomial, el cual es adecuado cuando la variable dependiente es categórica con más de dos niveles. Este modelo permite estimar la probabilidad de que un registro pertenezca a cada una de las clases (`baja`, `estandar` o `premium`) en función de variables predictoras. Se eligió este enfoque porque permite interpretar los efectos de múltiples variables sobre un resultado categórico no binario, entregando coeficientes comparables entre clases.
+
+A continuación, se implementa un análisis utilizando un modelo de regresión logística multinomial para evaluar qué variables influyen significativamente en la variable dependiente `calidad`. El modelo incluye todas las variables explicativas disponibles en el dataset.
+
+```{r}
+multinomial_completo <- function(data_final, variable_dependiente) {
+
+  # Convertir variable dependiente en factor ordenado (si no lo es)
+  data_final[[variable_dependiente]] <- as.factor(data_final[[variable_dependiente]])
+
+  # Usar todas las variables excepto la dependiente como predictoras
+  variables_covariables <- setdiff(names(data_final), c(variable_dependiente, "operario_id", "destino", "variedad"))
+  formula <- as.formula(paste(variable_dependiente, "~", paste(variables_covariables, collapse = " + ")))
+
+  # Ajustar modelo (suprime salida iterativa)
+  sink(tempfile())
+  modelo <- multinom(formula, data = data_final)
+  sink()
+
+  # Extraer coeficientes y errores estándar
+  resumen <- summary(modelo)
+  coefs <- resumen$coefficients
+  ses <- resumen$standard.errors
+
+  # Calcular z, p-valores e intervalos de confianza
+  z <- coefs / ses
+  p <- 2 * (1 - pnorm(abs(z)))
+  ci_lower <- coefs - 1.96 * ses
+  ci_upper <- coefs + 1.96 * ses
+
+  # Preparar datos para visualización
+  final_df <- as.data.frame(coefs) %>%
+    rownames_to_column("Clase") %>%
+    pivot_longer(-Clase, names_to = "Variable", values_to = "Coeficiente") %>%
+    left_join(
+      as.data.frame(p) %>% rownames_to_column("Clase") %>%
+        pivot_longer(-Clase, names_to = "Variable", values_to = "p_valor"),
+      by = c("Clase", "Variable")
+    ) %>%
+    left_join(
+      as.data.frame(ci_lower) %>% rownames_to_column("Clase") %>%
+        pivot_longer(-Clase, names_to = "Variable", values_to = "CI_lower"),
+      by = c("Clase", "Variable")
+    ) %>%
+    left_join(
+      as.data.frame(ci_upper) %>% rownames_to_column("Clase") %>%
+        pivot_longer(-Clase, names_to = "Variable", values_to = "CI_upper"),
+      by = c("Clase", "Variable")
+    ) %>%
+    mutate(Significativo = ifelse(p_valor < 0.05, "Sí", "No"))
+
+  # Crear lista de gráficos
+  plot_list <- list()
+  clases <- unique(final_df$Clase)
+
+  for(cl in clases) {
+    df_clase <- final_df %>% filter(Clase == cl)
+    p <- ggplot(df_clase, aes(x = Variable, y = Coeficiente, color = Significativo)) +
+      geom_hline(yintercept = 0, linetype = "dashed", color = "gray50") +
+      geom_point(size = 3) +
+      geom_errorbar(aes(ymin = CI_lower, ymax = CI_upper), width = 0.2) +
+      labs(title = paste("Coeficientes para la clase:", cl),
+           y = "Coeficiente estimado",
+           x = "Variable",
+           color = "Significativo (p < 0.05)") +
+      scale_color_manual(values = c("Sí" = "red", "No" = "gray")) +
+      theme_minimal() +
+      theme(axis.text.x = element_text(angle = 45, hjust = 1),
+            plot.title = element_text(hjust = 0.5))
+    plot_list[[cl]] <- p
+  }
+
+  # Tabla resumen de coeficientes significativos
+final_tabla <- final_df %>%
+  filter(Significativo == "Sí") %>%
+  select(Clase, Variable, Coeficiente, CI_lower, CI_upper, p_valor)
+
+return(list(modelo = modelo, graficos = plot_list, datos = final_df, tabla = final_tabla))
+}
+```
+
+```{r}
+# Ejecutar análisis
+resultados <- multinomial_completo(data_final, "calidad")
+
+# Mostrar tabla con coeficientes significativos
+knitr::kable(resultados$tabla, caption = "Coeficientes significativos del modelo multinomial")
+
+# Mostrar gráficos por clase
+for (i in seq_along(resultados$graficos)) {
+  print(resultados$graficos[[i]])
+}
+```
+
+### Interpretación de los resultados
+
+El modelo de regresión logística multinomial permitió identificar qué variables tienen un efecto significativo sobre la calidad de la fruta, diferenciando entre las clases **"baja"**, **"estandar"** y **"premium"**.
+
+-   En general, se observa que variables como `turno`, `tipo_empaque`, `calibre` y `tiempo_min` muestran coeficientes **estadísticamente significativos** (p \< 0.05) en al menos una de las categorías.
+
+-   Para la clase **"estandar"**, muchas variables resultaron significativas, aunque con coeficientes cercanos a cero, lo que sugiere efectos pequeños pero constantes.
+
+-   En la clase **"premium"**, también se detectaron variables significativas, lo que indica que ciertos factores del proceso podrían estar favoreciendo una mayor probabilidad de obtener fruta de esta calidad.
+
+-   La clase **"baja"** actúa como categoría base del modelo, por lo que sus resultados están implícitos en los coeficientes de las otras clases.
+
+Es importante destacar que, si bien algunos efectos son estadísticamente significativos, su **magnitud es baja**, lo que sugiere que la calidad final también podría depender de variables no observadas o propias del producto.
+
+## 5. Conclusión
+
+El análisis realizado permitió identificar patrones relevantes en la calidad del proceso de packing de cerezas. A través de la exploración de variables cualitativas y cuantitativas, se detectaron relaciones entre el turno, el tipo de empaque, el calibre y el tiempo de procesamiento con la calidad final del producto. El modelo de regresión logística multinomial confirmó que algunas de estas variables influyen significativamente en la probabilidad de obtener fruta premium.
+
+A pesar de que el análisis se basa en datos simulados, se logró desarrollar un flujo de trabajo completo, desde la limpieza de los datos hasta el modelamiento e interpretación de resultados, siguiendo buenas prácticas del análisis de datos con R.
+
+Como limitación, es importante mencionar que los datos no provienen de procesos reales, por lo que la validez de los hallazgos está restringida al contexto ficticio. Para trabajos futuros, se recomienda aplicar estos métodos a datos reales del sector frutícola, así como explorar técnicas de aprendizaje automático supervisado para mejorar la predicción de la calidad.
+
+## 6. Repositorio del proyecto
+
+El código fuente de este análisis, junto con el conjunto de datos `packing_cerezas.csv`, se encuentra disponible en el siguiente repositorio de GitHub:
+
+<https://github.com/Diamantinomc/proyecto1UDLA>
+
+Esto permite acceder a todos los scripts, reproducir los resultados y revisar el historial de cambios del proyecto.
+
+```{r}
+generar_reporte(data_final)
+```
